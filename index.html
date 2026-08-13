@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teaching Matrix — Editor</title>
+<link rel="stylesheet" href="matrix.css">
+<script src="matrix-common.js"></script>
+</head>
+<body>
+<header class="app">
+  <h1>📊 Teaching Matrix</h1>
+  <nav class="tabs">
+    <button id="tab-edit" class="active">View &amp; Edit</button>
+    <button id="tab-track">My Requests</button>
+  </nav>
+  <span class="who" id="who"></span>
+</header>
+<main>
+  <!-- connection / sign-in -->
+  <section class="card" id="connect-card">
+    <div class="row">
+      <strong>Repository:</strong> <span id="repo-label" class="note">detecting…</span>
+      <button class="btn" id="repo-change">change</button>
+      <span style="flex:1"></span>
+      <input type="password" id="token-input" placeholder="GitHub personal access token" size="34">
+      <button class="btn primary" id="signin">Sign in</button>
+      <button class="btn" id="signout" hidden>Sign out</button>
+    </div>
+    <div class="note" style="margin-top:6px">
+      Create a <b>fine-grained personal access token</b> at
+      GitHub → Settings → Developer settings → Fine-grained tokens, scoped to this repository with
+      <b>Contents: Read &amp; write</b> and <b>Pull requests: Read &amp; write</b>. The token stays in your browser
+      (localStorage) and is only ever sent to api.github.com.
+    </div>
+    <div id="connect-msg"></div>
+  </section>
+
+  <!-- EDIT TAB -->
+  <div id="pane-edit">
+    <section class="card">
+      <div class="row">
+        <label>Matrix: <select id="dataset"></select></label>
+        <input type="text" id="filter" placeholder="filter topics…" size="24">
+        <button class="btn" id="add-course">＋ Add course</button>
+        <button class="btn" id="add-topic">＋ Add topic</button>
+        <span style="flex:1"></span>
+        <span class="legend">
+          <span><span class="chip" style="background:var(--e)"></span>E emphasized</span>
+          <span><span class="chip" style="background:var(--d)"></span>D developed</span>
+          <span><span class="chip" style="background:var(--i)"></span>I introduced</span>
+          <span>click a cell to cycle · blank → I → D → E</span>
+        </span>
+      </div>
+    </section>
+    <div class="matrix-wrap" id="matrix-container"><div style="padding:30px" class="note">Sign in (or view a public repo) to load the matrix…</div></div>
+
+    <section class="card" id="changes-card" hidden>
+      <div class="row">
+        <strong id="changes-count"></strong>
+        <span style="flex:1"></span>
+        <button class="btn" id="discard-all">Discard all</button>
+        <button class="btn primary" id="submit">Submit as Pull Request…</button>
+      </div>
+      <ul class="changes" id="changes-list"></ul>
+      <div id="submit-msg"></div>
+    </section>
+  </div>
+
+  <!-- TRACK TAB -->
+  <div id="pane-track" hidden>
+    <section class="card">
+      <div class="row">
+        <strong>Change requests</strong>
+        <label><input type="checkbox" id="mine-only" checked> only mine</label>
+        <label><select id="pr-state"><option value="open">open</option><option value="all">all</option></select></label>
+        <button class="btn" id="refresh-prs">Refresh</button>
+      </div>
+    </section>
+    <div class="prlist" id="pr-list"><div class="note">Sign in to see your requests.</div></div>
+  </div>
+</main>
+
+<dialog id="dlg-submit">
+  <h3 style="margin-top:0">Submit change request</h3>
+  <div class="note" id="dlg-summary"></div>
+  <div class="row"><input type="text" id="pr-title" size="42" placeholder="Title"></div>
+  <div class="row"><input type="text" id="pr-note" size="42" placeholder="Optional note for the maintainers"></div>
+  <div class="row">
+    <span style="flex:1"></span>
+    <button class="btn" id="dlg-cancel">Cancel</button>
+    <button class="btn primary" id="dlg-go">Create pull request</button>
+  </div>
+  <div id="dlg-msg"></div>
+</dialog>
+
+<script>
+"use strict";
+let cfg, me = null, ds = null;          // config, signed-in user, active dataset
+let base = null,  work = null;          // base matrix (from repo), working copy
+let baseSha = null, baseCommitSha = null;
+const edits = new Map();                // "key\x1fcol" -> new value (cell edits only)
+const newRows = new Set(), newCols = new Set();
+
+const $ = id => document.getElementById(id);
+const msg = (id, text, cls) => { $(id).innerHTML = ""; if (text) $(id).append(el("div", { class: cls || "note" }, text)); };
+
+/* ---------- init ---------- */
+(async function init() {
+  cfg = await loadConfig();
+  $("repo-label").textContent = cfg.owner && cfg.repo ? `${cfg.owner}/${cfg.repo} @ ${cfg.baseBranch}` : "not configured";
+  for (const d of cfg.datasets) $("dataset").append(el("option", { value: d.id }, d.label));
+  ds = cfg.datasets[0];
+  GH.token = Settings.token;
+  if (GH.token) { $("token-input").value = "••••••••••••"; await signIn(true); }
+  else await loadMatrix();              // public repos work read-only without a token
+})();
+
+$("repo-change").onclick = () => {
+  const v = prompt("Repository (owner/repo):", cfg.owner && cfg.repo ? `${cfg.owner}/${cfg.repo}` : "");
+  if (v === null) return;
+  Settings.repoOverride = v.trim();
+  location.reload();
+};
+$("signin").onclick = () => signIn(false);
+$("signout").onclick = () => { Settings.token = ""; location.reload(); };
+
+async function signIn(silent) {
+  const t = $("token-input").value.trim();
+  if (!silent && t && !t.startsWith("•")) { GH.token = t; Settings.token = t; }
+  try {
+    me = await GH.user();
+    $("who").textContent = "";
+    $("who").append(el("img", { src: me.avatar_url, width: "22", height: "22", style: "border-radius:50%" }), me.login);
+    $("signin").hidden = true; $("signout").hidden = false;
+    msg("connect-msg", "");
+    await loadMatrix();
+  } catch (e) {
+    if (!silent) msg("connect-msg", "Sign-in failed: " + e.message, "err");
+    GH.token = null;
+  }
+}
+
+/* ---------- matrix load & render ---------- */
+$("dataset").onchange = async () => {
+  if (edits.size + newRows.size + newCols.size > 0 &&
+      !confirm("Switching matrices discards your unsubmitted edits. Continue?")) {
+    $("dataset").value = ds.id; return;
+  }
+  ds = cfg.datasets.find(d => d.id === $("dataset").value);
+  clearEdits(); await loadMatrix();
+};
+
+async function loadMatrix() {
+  if (!cfg.owner || !cfg.repo) { $("matrix-container").innerHTML = '<div style="padding:30px" class="err">Repository not configured — click "change".</div>'; return; }
+  try {
+    const br = await GH.branch(cfg.owner, cfg.repo, cfg.baseBranch);
+    baseCommitSha = br.commit.sha;
+    const f = await GH.fileAt(cfg.owner, cfg.repo, ds.path, cfg.baseBranch);
+    baseSha = f.sha;
+    base = toMatrix(CSV.parse(f.text), ds.keyCols);
+    work = cloneMatrix(base);
+    render();
+  } catch (e) {
+    $("matrix-container").innerHTML = "";
+    $("matrix-container").append(el("div", { style: "padding:30px" },
+      el("div", { class: "err" }, "Could not load matrix: " + e.message),
+      el("div", { class: "note" }, "For a private repository you must sign in with a token first.")));
+  }
+}
+
+function render() {
+  const table = renderMatrix($("matrix-container"), work, {
+    editable: !!me, edits, newRows, newCols,
+    onCell: cycleCell,
+  });
+  applyFilter(table);
+  refreshChangesPanel();
+}
+$("filter").oninput = () => { const t = document.querySelector("#matrix-container table"); if (t) applyFilter(t); };
+function applyFilter(table) {
+  const q = $("filter").value.trim().toLowerCase();
+  for (const tr of table.querySelectorAll("tbody tr")) {
+    if (tr.classList.contains("cat-row")) continue;
+    tr.hidden = q && !tr.textContent.toLowerCase().includes(q);
+  }
+}
+
+function cycleCell(key, col) {
+  const ek = key + "\x1f" + col;
+  const orig = cellValue(base, key, col);
+  const cur = edits.has(ek) ? edits.get(ek) : cellValue(work, key, col);
+  const order = cfg.levels;
+  const next = order[(order.indexOf(cur) + 1) % order.length];
+  // new rows/cols live directly in `work`; existing cells go through `edits`
+  if (newRows.has(key) || newCols.has(col)) setCell(work, key, col, next);
+  else if (next === orig) edits.delete(ek);
+  else edits.set(ek, next);
+  render();
+}
+function cellValue(m, key, col) {
+  const r = m.rows.find(r => rowKey(m, r) === key);
+  const i = m.header.indexOf(col);
+  return r && i >= 0 ? (r[i] || "").trim() : "";
+}
+function setCell(m, key, col, v) {
+  const r = m.rows.find(r => rowKey(m, r) === key);
+  const i = m.header.indexOf(col);
+  if (r && i >= 0) r[i] = v;
+}
+
+/* ---------- add course / topic ---------- */
+$("add-course").onclick = () => {
+  if (!me) return alert("Sign in first.");
+  const name = prompt('New course column name (e.g. "ASDS 6307"):');
+  if (!name) return;
+  const n = name.trim();
+  if (work.header.includes(n)) return alert("That column already exists.");
+  work.header.push(n);
+  for (const r of work.rows) r.push("");
+  newCols.add(n);
+  render();
+};
+$("add-topic").onclick = () => {
+  if (!me) return alert("Sign in first.");
+  const cat = prompt("Category (exactly as shown on a category bar, or a new one):");
+  if (!cat) return;
+  const keyParts = [cat.trim()];
+  for (let i = 1; i < work.keyN; i++) {
+    const label = work.header[i];
+    const v = prompt(`${label}:`);
+    if (!v) return;
+    keyParts.push(v.trim());
+  }
+  const row = [...keyParts, ...Array(work.header.length - work.keyN).fill("")];
+  const key = row.slice(0, work.keyN).join("");
+  if (work.rows.some(r => rowKey(work, r) === key)) return alert("That topic already exists.");
+  // insert at end of its category group (or append if new category)
+  let at = work.rows.length;
+  for (let i = work.rows.length - 1; i >= 0; i--)
+    if (work.rows[i][0] === keyParts[0]) { at = i + 1; break; }
+  work.rows.splice(at, 0, row);
+  newRows.add(key);
+  render();
+};
+
+/* ---------- changes panel ---------- */
+function currentDiff() {
+  const target = cloneMatrix(work);
+  for (const [ek, v] of edits) {
+    const [key, col] = ek.split("\x1f");
+    setCell(target, key, col, v);
+  }
+  return { target, diff: diffMatrices(base, target) };
+}
+function refreshChangesPanel() {
+  const { diff } = currentDiff();
+  const n = diff.cells.length + diff.addedRows.length + diff.addedCols.length;
+  $("changes-card").hidden = n === 0;
+  if (!n) return;
+  $("changes-count").textContent = `${n} pending change${n > 1 ? "s" : ""}`;
+  const ul = $("changes-list"); ul.textContent = "";
+  for (const c of diff.addedCols) ul.append(el("li", {}, `＋ course column “${c}”`));
+  for (const rname of diff.addedRows) ul.append(el("li", {}, `＋ topic “${rname}”`));
+  for (const c of diff.cells) {
+    const li = el("li", {}, `${c.label} × ${c.col}: ${c.old || "·"} → ${c.new || "·"}`);
+    const ek = c.key + "\x1f" + c.col;
+    if (edits.has(ek)) li.append(el("span", { class: "revert", title: "revert", onclick: () => { edits.delete(ek); render(); } }, "✕"));
+    ul.append(li);
+  }
+}
+$("discard-all").onclick = () => { if (confirm("Discard all pending edits?")) { clearEdits(); work = cloneMatrix(base); render(); } };
+function clearEdits() { edits.clear(); newRows.clear(); newCols.clear(); }
+
+/* ---------- submit PR ---------- */
+$("submit").onclick = () => {
+  if (!me) return alert("Sign in first.");
+  const { diff } = currentDiff();
+  const n = diff.cells.length + diff.addedRows.length + diff.addedCols.length;
+  $("dlg-summary").textContent = `${n} change(s) to ${ds.label} will be proposed on a new branch and opened as a pull request against ${cfg.baseBranch}.`;
+  $("pr-title").value = `Matrix update: ${summaryTitle(diff)}`;
+  msg("dlg-msg", "");
+  $("dlg-submit").showModal();
+};
+function summaryTitle(diff) {
+  const bits = [];
+  if (diff.addedCols.length) bits.push(`add ${diff.addedCols.join(", ")}`);
+  if (diff.addedRows.length) bits.push(`${diff.addedRows.length} new topic(s)`);
+  if (diff.cells.length) bits.push(`${diff.cells.length} cell(s)`);
+  return bits.join(" · ") || "no-op";
+}
+$("dlg-cancel").onclick = () => $("dlg-submit").close();
+$("dlg-go").onclick = async () => {
+  const { target, diff } = currentDiff();
+  const title = $("pr-title").value.trim() || "Teaching matrix update";
+  const note = $("pr-note").value.trim();
+  const branch = cfg.branchPrefix + me.login + "-" + Date.now().toString(36);
+  $("dlg-go").disabled = true;
+  msg("dlg-msg", "Creating branch…");
+  try {
+    await GH.createBranch(cfg.owner, cfg.repo, branch, baseCommitSha);
+    msg("dlg-msg", "Committing CSV…");
+    await GH.putFile(cfg.owner, cfg.repo, ds.path, branch, CSV.serialize(matrixRows(target)), title, baseSha);
+    msg("dlg-msg", "Opening pull request…");
+    let body = changesToMarkdown(ds.label, diff);
+    if (note) body = `> ${note}\n\n` + body;
+    body += `\n\n<!-- tm-dataset:${ds.id} -->`;
+    const pr = await GH.createPR(cfg.owner, cfg.repo, branch, cfg.baseBranch, title, body);
+    $("dlg-submit").close();
+    clearEdits();
+    await loadMatrix();
+    msg("submit-msg", "");
+    $("submit-msg").append(el("div", { class: "ok" }, "Pull request created: "),
+      el("a", { href: pr.html_url, target: "_blank" }, `#${pr.number} — ${pr.title}`));
+    showTab("track"); refreshPRs();
+  } catch (e) {
+    if (e.status === 403 || e.status === 404) {
+      msg("dlg-msg", "You don't have write access to this repository. Ask a maintainer to add you as a collaborator (Settings → Collaborators), then try again.", "err");
+    } else msg("dlg-msg", "Failed: " + e.message, "err");
+  } finally { $("dlg-go").disabled = false; }
+};
+
+/* ---------- track tab ---------- */
+function showTab(which) {
+  $("pane-edit").hidden = which !== "edit";
+  $("pane-track").hidden = which !== "track";
+  $("tab-edit").classList.toggle("active", which === "edit");
+  $("tab-track").classList.toggle("active", which === "track");
+}
+$("tab-edit").onclick = () => showTab("edit");
+$("tab-track").onclick = () => { showTab("track"); refreshPRs(); };
+$("refresh-prs").onclick = refreshPRs;
+$("mine-only").onchange = refreshPRs;
+$("pr-state").onchange = refreshPRs;
+
+async function refreshPRs() {
+  const box = $("pr-list");
+  box.innerHTML = ""; box.append(el("div", {}, el("span", { class: "spinner" }), " loading…"));
+  try {
+    const state = $("pr-state").value;
+    let prs = await GH.listPRs(cfg.owner, cfg.repo, state === "all" ? "all" : "open");
+    prs = prs.filter(p => p.head.ref.startsWith(cfg.branchPrefix));
+    if ($("mine-only").checked && me) prs = prs.filter(p => p.user.login === me.login);
+    box.textContent = "";
+    if (!prs.length) { box.append(el("div", { class: "note" }, "No change requests found.")); return; }
+    for (const pr of prs) {
+      const card = el("div", { class: "pr" },
+        el("h3", {}, prBadge(pr), " ", el("a", { href: pr.html_url, target: "_blank" }, `#${pr.number} ${pr.title}`)),
+        el("div", { class: "meta" }, `by ${pr.user.login} · opened ${fmtDate(pr.created_at)}` + (pr.merged_at ? ` · merged ${fmtDate(pr.merged_at)}` : "")));
+      box.append(card);
+      prStatus(cfg.owner, cfg.repo, pr).then(rs => {
+        if (rs) card.querySelector("h3").append(" ", el("span", { class: "badge review" }, rs));
+      });
+    }
+  } catch (e) {
+    box.textContent = ""; box.append(el("div", { class: "err" }, "Could not load PRs: " + e.message));
+  }
+}
+</script>
+</body>
+</html>

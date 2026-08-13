@@ -1,0 +1,26 @@
+{
+  "owner": "UTA-DataScience",
+  "repo": "TeachingMatrix",
+  "baseBranch": "main",
+  "branchPrefix": "matrix-edit/",
+  "levels": [
+    "",
+    "I",
+    "D",
+    "E"
+  ],
+  "datasets": [
+    {
+      "id": "coarse",
+      "label": "Coarse matrix (114 topics)",
+      "path": "data/matrix.csv",
+      "keyCols": 2
+    },
+    {
+      "id": "granular",
+      "label": "Granular matrix (277 sub-topics)",
+      "path": "data/granular.csv",
+      "keyCols": 3
+    }
+  ]
+}

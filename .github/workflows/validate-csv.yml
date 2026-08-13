@@ -1,0 +1,44 @@
+name: Validate matrix CSVs
+on:
+  pull_request:
+    paths: ["data/*.csv"]
+  push:
+    branches: [main]
+    paths: ["data/*.csv"]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate CSV structure
+        run: |
+          python3 - <<'PY'
+          import csv, json, sys
+          cfg = json.load(open("config.json"))
+          allowed = set(v for v in cfg.get("levels", ["", "I", "D", "E"]))
+          problems = 0
+          for ds in cfg["datasets"]:
+              path, keyn = ds["path"], ds["keyCols"]
+              rows = list(csv.reader(open(path, encoding="utf-8")))
+              if not rows:
+                  print(f"::error file={path}::empty file"); problems += 1; continue
+              header = rows[0]
+              width = len(header)
+              if len(set(header)) != width:
+                  print(f"::error file={path}::duplicate column names"); problems += 1
+              keys = set()
+              for i, r in enumerate(rows[1:], start=2):
+                  if len(r) != width:
+                      print(f"::error file={path},line={i}::row has {len(r)} fields, expected {width}"); problems += 1
+                      continue
+                  k = "\x1f".join(r[:keyn])
+                  if k in keys:
+                      print(f"::error file={path},line={i}::duplicate topic key {r[:keyn]}"); problems += 1
+                  keys.add(k)
+                  for j, v in enumerate(r[keyn:], start=keyn):
+                      if v.strip() not in allowed:
+                          print(f"::error file={path},line={i}::invalid cell value {v!r} in column {header[j]!r} (allowed: blank, I, D, E)")
+                          problems += 1
+              print(f"{path}: {len(rows)-1} rows x {width} cols checked")
+          sys.exit(1 if problems else 0)
+          PY

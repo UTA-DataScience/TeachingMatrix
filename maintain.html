@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teaching Matrix — Maintainer console</title>
+<link rel="stylesheet" href="matrix.css">
+<script src="matrix-common.js"></script>
+</head>
+<body>
+<header class="app">
+  <h1>🛠️ Teaching Matrix — Maintainer console</h1>
+  <nav class="tabs">
+    <button id="tab-queue" class="active">Request queue</button>
+    <button id="tab-compare">Compare versions</button>
+    <button id="tab-history">History</button>
+  </nav>
+  <span class="who" id="who"></span>
+</header>
+<main>
+  <section class="card">
+    <div class="row">
+      <strong>Repository:</strong> <span id="repo-label" class="note">detecting…</span>
+      <button class="btn" id="repo-change">change</button>
+      <span style="flex:1"></span>
+      <input type="password" id="token-input" placeholder="GitHub token (maintainer)" size="30">
+      <button class="btn primary" id="signin">Sign in</button>
+      <button class="btn" id="signout" hidden>Sign out</button>
+    </div>
+    <div id="connect-msg"></div>
+  </section>
+
+  <!-- QUEUE -->
+  <div id="pane-queue">
+    <section class="card">
+      <div class="row">
+        <strong>Open change requests</strong>
+        <label><select id="pr-state"><option value="open">open</option><option value="all">all</option></select></label>
+        <button class="btn" id="refresh">Refresh</button>
+        <span class="note" id="queue-count"></span>
+      </div>
+    </section>
+    <div class="prlist" id="queue"></div>
+  </div>
+
+  <!-- COMPARE -->
+  <div id="pane-compare" hidden>
+    <section class="card">
+      <div class="row">
+        <label>Matrix: <select id="cmp-dataset"></select></label>
+        <label>Base: <input type="text" id="cmp-a" size="22" placeholder="ref / sha / tag"></label>
+        <label>Compare: <input type="text" id="cmp-b" size="22" placeholder="ref / sha / tag"></label>
+        <button class="btn primary" id="cmp-go">Compare</button>
+        <span class="note">any branch, tag, or commit SHA — e.g. <code>main</code> vs an older commit from the History tab</span>
+      </div>
+      <div id="cmp-msg"></div>
+    </section>
+    <section class="card" id="cmp-summary-card" hidden><div id="cmp-summary"></div></section>
+    <div class="matrix-wrap" id="cmp-view"></div>
+  </div>
+
+  <!-- HISTORY -->
+  <div id="pane-history" hidden>
+    <section class="card">
+      <div class="row">
+        <label>Matrix: <select id="hist-dataset"></select></label>
+        <button class="btn" id="hist-refresh">Refresh</button>
+        <span class="note">click a commit to use it in Compare</span>
+      </div>
+    </section>
+    <div class="prlist" id="history"></div>
+  </div>
+</main>
+
+<script>
+"use strict";
+let cfg, me = null;
+const $ = id => document.getElementById(id);
+const msg = (id, text, cls) => { $(id).innerHTML = ""; if (text) $(id).append(el("div", { class: cls || "note" }, text)); };
+
+(async function init() {
+  cfg = await loadConfig();
+  $("repo-label").textContent = cfg.owner && cfg.repo ? `${cfg.owner}/${cfg.repo} @ ${cfg.baseBranch}` : "not configured";
+  for (const sel of ["cmp-dataset", "hist-dataset"])
+    for (const d of cfg.datasets) $(sel).append(el("option", { value: d.id }, d.label));
+  $("cmp-a").value = cfg.baseBranch;
+  GH.token = Settings.token;
+  if (GH.token) { $("token-input").value = "••••••••••••"; await signIn(true); }
+})();
+
+$("repo-change").onclick = () => {
+  const v = prompt("Repository (owner/repo):", cfg.owner && cfg.repo ? `${cfg.owner}/${cfg.repo}` : "");
+  if (v === null) return;
+  Settings.repoOverride = v.trim(); location.reload();
+};
+$("signin").onclick = () => signIn(false);
+$("signout").onclick = () => { Settings.token = ""; location.reload(); };
+async function signIn(silent) {
+  const t = $("token-input").value.trim();
+  if (!silent && t && !t.startsWith("•")) { GH.token = t; Settings.token = t; }
+  try {
+    me = await GH.user();
+    $("who").textContent = "";
+    $("who").append(el("img", { src: me.avatar_url, width: "22", height: "22", style: "border-radius:50%" }), me.login);
+    $("signin").hidden = true; $("signout").hidden = false;
+    msg("connect-msg", "");
+    refreshQueue();
+  } catch (e) { if (!silent) msg("connect-msg", "Sign-in failed: " + e.message, "err"); GH.token = null; }
+}
+
+/* ---------- tabs ---------- */
+function showTab(which) {
+  for (const t of ["queue", "compare", "history"]) {
+    $("pane-" + t).hidden = t !== which;
+    $("tab-" + t).classList.toggle("active", t === which);
+  }
+}
+$("tab-queue").onclick = () => { showTab("queue"); refreshQueue(); };
+$("tab-compare").onclick = () => showTab("compare");
+$("tab-history").onclick = () => { showTab("history"); refreshHistory(); };
+
+/* ---------- request queue ---------- */
+$("refresh").onclick = refreshQueue;
+$("pr-state").onchange = refreshQueue;
+
+async function refreshQueue() {
+  const box = $("queue");
+  box.innerHTML = ""; box.append(el("div", {}, el("span", { class: "spinner" }), " loading…"));
+  try {
+    const prs = (await GH.listPRs(cfg.owner, cfg.repo, $("pr-state").value === "all" ? "all" : "open"))
+      .filter(p => p.head.ref.startsWith(cfg.branchPrefix));
+    $("queue-count").textContent = `${prs.length} request(s)`;
+    box.textContent = "";
+    if (!prs.length) { box.append(el("div", { class: "note" }, "Queue is empty. ✨")); return; }
+    for (const pr of prs) box.append(prCard(pr));
+  } catch (e) { box.textContent = ""; box.append(el("div", { class: "err" }, e.message)); }
+}
+
+function prCard(pr) {
+  const diffBox = el("div", { class: "diffbox" });
+  const actions = el("div", { class: "row", style: "margin-top:8px" });
+  const status = el("span", { class: "note" });
+  const card = el("div", { class: "pr" },
+    el("h3", {}, prBadge(pr), " ", el("a", { href: pr.html_url, target: "_blank" }, `#${pr.number} ${pr.title}`)),
+    el("div", { class: "meta" }, `by ${pr.user.login} · ${fmtDate(pr.created_at)} · branch ${pr.head.ref}`),
+    el("details", { ontoggle: e => { if (e.target.open && !diffBox.dataset.loaded) loadPrDiff(pr, diffBox); } },
+      el("summary", {}, "Matrix diff"), diffBox),
+    actions);
+  prStatus(cfg.owner, cfg.repo, pr).then(rs => { if (rs) card.querySelector("h3").append(" ", el("span", { class: "badge review" }, rs)); });
+  if (pr.state === "open") {
+    actions.append(
+      el("button", { class: "btn", onclick: () => act(() => GH.review(cfg.owner, cfg.repo, pr.number, "APPROVE"), status, "approved") }, "Approve"),
+      el("button", { class: "btn primary", onclick: () => { if (confirm(`Merge #${pr.number}?`)) act(() => GH.mergePR(cfg.owner, cfg.repo, pr.number), status, "merged", refreshQueue); } }, "Merge"),
+      el("button", { class: "btn", onclick: () => {
+        const c = prompt("Request changes — comment to the author:");
+        if (c) act(() => GH.review(cfg.owner, cfg.repo, pr.number, "REQUEST_CHANGES", c), status, "changes requested");
+      } }, "Request changes"),
+      el("button", { class: "btn danger", onclick: () => { if (confirm(`Close #${pr.number} without merging?`)) act(() => GH.closePR(cfg.owner, cfg.repo, pr.number), status, "closed", refreshQueue); } }, "Close"),
+      status);
+  }
+  return card;
+}
+async function act(fn, statusEl, okText, after) {
+  statusEl.textContent = "…";
+  try { await fn(); statusEl.textContent = ""; statusEl.append(el("span", { class: "ok" }, okText)); if (after) setTimeout(after, 600); }
+  catch (e) { statusEl.textContent = ""; statusEl.append(el("span", { class: "err" }, e.message)); }
+}
+
+async function loadPrDiff(pr, box) {
+  box.dataset.loaded = "1";
+  box.append(el("span", { class: "spinner" }));
+  try {
+    const files = await GH.prFiles(cfg.owner, cfg.repo, pr.number);
+    box.textContent = "";
+    const dataFiles = files.filter(f => cfg.datasets.some(d => d.path === f.filename));
+    if (!dataFiles.length) {
+      box.append(el("div", { class: "note" }, "No matrix CSV changes in this PR. Files: " + files.map(f => f.filename).join(", ")));
+      return;
+    }
+    for (const f of dataFiles) {
+      const dsc = cfg.datasets.find(d => d.path === f.filename);
+      let baseM;
+      try {
+        baseM = toMatrix(CSV.parse((await GH.fileAt(cfg.owner, cfg.repo, f.filename, pr.base.sha)).text), dsc.keyCols);
+      } catch (e) { baseM = { header: [], rows: [], keyN: dsc.keyCols }; } // new file
+      const headM = toMatrix(CSV.parse((await GH.fileAt(cfg.owner, cfg.repo, f.filename, pr.head.sha)).text), dsc.keyCols);
+      const diff = diffMatrices(baseM, headM);
+      box.append(renderDiffSummary(dsc.label, diff));
+      renderDiffTable(box, headM, diff);
+    }
+  } catch (e) { box.textContent = ""; box.append(el("div", { class: "err" }, "Diff failed: " + e.message)); }
+}
+
+function renderDiffSummary(label, diff) {
+  const bits = [];
+  if (diff.addedCols.length)   bits.push(`＋ courses: ${diff.addedCols.join(", ")}`);
+  if (diff.removedCols.length) bits.push(`－ courses: ${diff.removedCols.join(", ")}`);
+  if (diff.addedRows.length)   bits.push(`＋ topics: ${diff.addedRows.join("; ")}`);
+  if (diff.removedRows.length) bits.push(`－ topics: ${diff.removedRows.join("; ")}`);
+  bits.push(`${diff.cells.length} cell change(s)`);
+  return el("div", { class: "note", style: "margin:6px 0" }, `${label}: ` + bits.join(" · "));
+}
+
+/* Render only the changed slice of the matrix: rows & columns that contain changes */
+function renderDiffTable(container, headM, diff) {
+  if (!diff.cells.length && !diff.addedRows.length && !diff.addedCols.length) return;
+  const hl = new Map(diff.cells.map(c => [c.key + "\x1f" + c.col, { old: c.old, new: c.new }]));
+  const touchedKeys = new Set(diff.cells.map(c => c.key));
+  const touchedCols = new Set([...diff.cells.map(c => c.col), ...diff.addedCols]);
+  const slice = {
+    keyN: headM.keyN,
+    header: [...headM.header.slice(0, headM.keyN), ...headM.header.slice(headM.keyN).filter(c => touchedCols.has(c))],
+    rows: headM.rows.filter(r => touchedKeys.has(rowKey(headM, r))),
+  };
+  // remap row cells to the sliced header
+  slice.rows = slice.rows.map(r => slice.header.map(h => {
+    const i = headM.header.indexOf(h);
+    return i >= 0 ? r[i] : "";
+  }));
+  const wrap = el("div", { class: "matrix-wrap", style: "max-height:380px" });
+  container.append(wrap);
+  renderMatrix(wrap, slice, { highlight: hl });
+}
+
+/* ---------- compare tab ---------- */
+$("cmp-go").onclick = async () => {
+  const dsc = cfg.datasets.find(d => d.id === $("cmp-dataset").value);
+  const a = $("cmp-a").value.trim(), b = $("cmp-b").value.trim();
+  if (!a || !b) return msg("cmp-msg", "Enter two refs.", "err");
+  msg("cmp-msg", "Loading…");
+  try {
+    const [fa, fb] = await Promise.all([
+      GH.fileAt(cfg.owner, cfg.repo, dsc.path, a),
+      GH.fileAt(cfg.owner, cfg.repo, dsc.path, b),
+    ]);
+    const ma = toMatrix(CSV.parse(fa.text), dsc.keyCols);
+    const mb = toMatrix(CSV.parse(fb.text), dsc.keyCols);
+    const diff = diffMatrices(ma, mb);
+    msg("cmp-msg", "");
+    $("cmp-summary-card").hidden = false;
+    $("cmp-summary").textContent = "";
+    $("cmp-summary").append(renderDiffSummary(`${dsc.label} — ${a} → ${b}`, diff));
+    $("cmp-view").textContent = "";
+    if (diff.cells.length || diff.addedRows.length || diff.addedCols.length) renderDiffTable($("cmp-view"), mb, diff);
+    else $("cmp-view").append(el("div", { style: "padding:22px" , class: "note" }, "No differences."));
+  } catch (e) { msg("cmp-msg", e.message, "err"); }
+};
+
+/* ---------- history tab ---------- */
+$("hist-refresh").onclick = refreshHistory;
+$("hist-dataset").onchange = refreshHistory;
+async function refreshHistory() {
+  const dsc = cfg.datasets.find(d => d.id === $("hist-dataset").value);
+  const box = $("history");
+  box.innerHTML = ""; box.append(el("div", {}, el("span", { class: "spinner" }), " loading…"));
+  try {
+    const commits = await GH.commits(cfg.owner, cfg.repo, dsc.path);
+    box.textContent = "";
+    if (!commits.length) return box.append(el("div", { class: "note" }, "No history yet."));
+    for (const c of commits) {
+      box.append(el("div", { class: "pr" },
+        el("h3", {}, el("a", { href: c.html_url, target: "_blank" }, c.sha.slice(0, 8)), " ",
+          (c.commit.message || "").split("\n")[0]),
+        el("div", { class: "meta" }, `${c.commit.author.name} · ${fmtDate(c.commit.author.date)}`),
+        el("div", { class: "row", style: "margin-top:6px" },
+          el("button", { class: "btn", onclick: () => { $("cmp-dataset").value = dsc.id; $("cmp-b").value = $("cmp-a").value === c.sha ? $("cmp-b").value : $("cmp-b").value || cfg.baseBranch; $("cmp-a").value = c.sha; showTab("compare"); } }, "Use as Base"),
+          el("button", { class: "btn", onclick: () => { $("cmp-dataset").value = dsc.id; $("cmp-b").value = c.sha; showTab("compare"); } }, "Use as Compare"))));
+    }
+  } catch (e) { box.textContent = ""; box.append(el("div", { class: "err" }, e.message)); }
+}
+</script>
+</body>
+</html>
