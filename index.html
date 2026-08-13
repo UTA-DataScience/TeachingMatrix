@@ -29,8 +29,11 @@
     </div>
     <div class="note" style="margin-top:6px">
       Create a <b>fine-grained personal access token</b> at
-      GitHub → Settings → Developer settings → Fine-grained tokens, scoped to this repository with
-      <b>Contents: Read &amp; write</b> and <b>Pull requests: Read &amp; write</b>. The token stays in your browser
+      GitHub → Settings → Developer settings → Fine-grained tokens with
+      <b>Resource owner = the organization that owns this repo</b> (not your personal account),
+      scoped to this repository, with <b>Contents: Read &amp; write</b> and <b>Pull requests: Read &amp; write</b>.
+      If the organization doesn't appear as a resource owner, it hasn't enabled fine-grained tokens —
+      use a <b>classic token</b> (scope: <code>repo</code>) instead. The token stays in your browser
       (localStorage) and is only ever sent to api.github.com.
     </div>
     <div id="connect-msg"></div>
@@ -355,7 +358,13 @@ $("dlg-go").onclick = async () => {
     showTab("track"); refreshPRs();
   } catch (e) {
     if (e.status === 403 || e.status === 404) {
-      msg("dlg-msg", "You don't have write access to this repository. Ask a maintainer to add you as a collaborator (Settings → Collaborators), then try again.", "err");
+      $("dlg-msg").innerHTML = "";
+      $("dlg-msg").append(
+        el("div", { class: "err" }, "GitHub rejected the write (" + e.message + "). Most common causes:"),
+        el("ul", { class: "note" },
+          el("li", {}, "Your fine-grained token's Resource owner is your personal account — for this org-owned repo it must be the ", el("b", {}, "organization"), ". Re-create the token and pick the org under \u201cResource owner\u201d."),
+          el("li", {}, "The organization hasn't enabled fine-grained tokens (org Settings \u2192 Third-party Access \u2192 Personal access tokens). A ", el("b", {}, "classic token"), " with the \u201crepo\u201d scope works regardless."),
+          el("li", {}, "You aren't a collaborator on the repository — ask a maintainer to add you with Write access.")));
     } else msg("dlg-msg", "Failed: " + e.message, "err");
   } finally { $("dlg-go").disabled = false; }
 };
