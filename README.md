@@ -12,8 +12,8 @@ repo and are served by GitHub Pages:
 
 Data files:
 
-- `data/matrix.csv` — coarse matrix (114 topics × courses). Columns: `Category, Topic, <course…>`
-- `data/granular.csv` — granular matrix (277 sub-topics). Columns: `Category, ID, Sub-topic, <course…>`
+- `data/matrix.csv` — coarse matrix (120 topics × courses). Columns: `Category, Topic, <course…>`
+- `data/granular.csv` — granular matrix (284 sub-topics). Columns: `Category, ID, Sub-topic, <course…>`
 
 Cell values: blank (not covered) · `I` introduced · `D` developed · `E` emphasized.
 A GitHub Action (`.github/workflows/validate-csv.yml`) validates every PR: rectangular CSV,

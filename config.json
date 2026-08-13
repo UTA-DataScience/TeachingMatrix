@@ -12,13 +12,13 @@
   "datasets": [
     {
       "id": "coarse",
-      "label": "Coarse matrix (114 topics)",
+      "label": "Coarse matrix (120 topics)",
       "path": "data/matrix.csv",
       "keyCols": 2
     },
     {
       "id": "granular",
-      "label": "Granular matrix (277 sub-topics)",
+      "label": "Granular matrix (284 sub-topics)",
       "path": "data/granular.csv",
       "keyCols": 3
     }
