@@ -74,7 +74,8 @@ td.cell.lv-I { background: var(--i); }
 td.cell.lv-blank { color: #c3cbd6; font-weight: 400; }
 td.cell.clickable { cursor: pointer; }
 td.cell.clickable:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
-td.cell.edited { outline: 2px solid #d4a72c; outline-offset: -2px; }
+td.cell.edited, td.cell.clickable.edited:hover { outline: 2.5px solid #cf222e; outline-offset: -2.5px; }
+td.cell.edited { outline: 2.5px solid #cf222e; outline-offset: -2.5px; }
 td.cell.diff { min-width: 76px; font-weight: 600; }
 td.cell.diff .old { text-decoration: line-through; opacity: .75; padding: 0 3px; border-radius: 3px; }
 td.cell.diff.lv-blank { color: var(--ink); }
