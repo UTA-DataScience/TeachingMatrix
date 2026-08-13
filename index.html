@@ -44,6 +44,7 @@
         <input type="text" id="filter" placeholder="filter topics…" size="24">
         <button class="btn" id="add-course">＋ Add course</button>
         <button class="btn" id="add-topic">＋ Add topic</button>
+        <button class="btn" id="undo" disabled title="Undo last change (Cmd/Ctrl+Z)">↩ Undo</button>
         <span style="flex:1"></span>
         <span class="legend">
           <span><span class="chip" style="background:var(--e)"></span>E emphasized</span>
@@ -101,6 +102,7 @@ let base = null,  work = null;          // base matrix (from repo), working copy
 let baseSha = null, baseCommitSha = null;
 const edits = new Map();                // "key\x1fcol" -> new value (cell edits only)
 const newRows = new Set(), newCols = new Set();
+const undoStack = [];                   // [{type:"edit"|"workcell"|"addcol"|"addrow", ...}]
 
 const $ = id => document.getElementById(id);
 const msg = (id, text, cls) => { $(id).innerHTML = ""; if (text) $(id).append(el("div", { class: cls || "note" }, text)); };
@@ -176,6 +178,7 @@ function render() {
   });
   applyFilter(table);
   refreshChangesPanel();
+  $("undo").disabled = undoStack.length === 0;
 }
 $("filter").oninput = () => { const t = document.querySelector("#matrix-container table"); if (t) applyFilter(t); };
 function applyFilter(table) {
@@ -193,9 +196,14 @@ function cycleCell(key, col) {
   const order = cfg.levels;
   const next = order[(order.indexOf(cur) + 1) % order.length];
   // new rows/cols live directly in `work`; existing cells go through `edits`
-  if (newRows.has(key) || newCols.has(col)) setCell(work, key, col, next);
-  else if (next === orig) edits.delete(ek);
-  else edits.set(ek, next);
+  if (newRows.has(key) || newCols.has(col)) {
+    undoStack.push({ type: "workcell", key, col, prev: cellValue(work, key, col) });
+    setCell(work, key, col, next);
+  } else {
+    undoStack.push({ type: "edit", ek, prev: edits.has(ek) ? edits.get(ek) : null });
+    if (next === orig) edits.delete(ek);
+    else edits.set(ek, next);
+  }
   render();
 }
 function cellValue(m, key, col) {
@@ -219,6 +227,7 @@ $("add-course").onclick = () => {
   work.header.push(n);
   for (const r of work.rows) r.push("");
   newCols.add(n);
+  undoStack.push({ type: "addcol", name: n });
   render();
 };
 $("add-topic").onclick = () => {
@@ -233,7 +242,7 @@ $("add-topic").onclick = () => {
     keyParts.push(v.trim());
   }
   const row = [...keyParts, ...Array(work.header.length - work.keyN).fill("")];
-  const key = row.slice(0, work.keyN).join("");
+  const key = rowKey(work, row);
   if (work.rows.some(r => rowKey(work, r) === key)) return alert("That topic already exists.");
   // insert at end of its category group (or append if new category)
   let at = work.rows.length;
@@ -241,6 +250,7 @@ $("add-topic").onclick = () => {
     if (work.rows[i][0] === keyParts[0]) { at = i + 1; break; }
   work.rows.splice(at, 0, row);
   newRows.add(key);
+  undoStack.push({ type: "addrow", key });
   render();
 };
 
@@ -248,8 +258,9 @@ $("add-topic").onclick = () => {
 function currentDiff() {
   const target = cloneMatrix(work);
   for (const [ek, v] of edits) {
-    const [key, col] = ek.split("\x1f");
-    setCell(target, key, col, v);
+    // rowKey itself contains \x1f separators, so split on the LAST one (col names can't contain it)
+    const i = ek.lastIndexOf("\x1f");
+    setCell(target, ek.slice(0, i), ek.slice(i + 1), v);
   }
   return { target, diff: diffMatrices(base, target) };
 }
@@ -270,7 +281,36 @@ function refreshChangesPanel() {
   }
 }
 $("discard-all").onclick = () => { if (confirm("Discard all pending edits?")) { clearEdits(); work = cloneMatrix(base); render(); } };
-function clearEdits() { edits.clear(); newRows.clear(); newCols.clear(); }
+function clearEdits() { edits.clear(); newRows.clear(); newCols.clear(); undoStack.length = 0; }
+
+/* ---------- undo ---------- */
+function undo() {
+  const op = undoStack.pop();
+  if (!op) return;
+  if (op.type === "edit") {
+    if (op.prev === null) edits.delete(op.ek);
+    else edits.set(op.ek, op.prev);
+  } else if (op.type === "workcell") {
+    setCell(work, op.key, op.col, op.prev);
+  } else if (op.type === "addcol") {
+    const i = work.header.indexOf(op.name);
+    if (i >= 0) { work.header.splice(i, 1); for (const r of work.rows) r.splice(i, 1); }
+    newCols.delete(op.name);
+  } else if (op.type === "addrow") {
+    const i = work.rows.findIndex(r => rowKey(work, r) === op.key);
+    if (i >= 0) work.rows.splice(i, 1);
+    newRows.delete(op.key);
+  }
+  render();
+}
+$("undo").onclick = undo;
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+    const t = e.target.tagName;
+    if (t === "INPUT" || t === "TEXTAREA") return;   // don't hijack text-field undo
+    e.preventDefault(); undo();
+  }
+});
 
 /* ---------- submit PR ---------- */
 $("submit").onclick = () => {

@@ -36,12 +36,12 @@ const CSV = {
 /* ---------------- Matrix model ----------------
    A matrix = { header:[...], rows:[[...]], keyN:int }
    Columns [0, keyN) are key columns (Category, Topic / Category, ID, Sub-topic);
-   columns [keyN, ...) are courses. Row key = key cells joined with "". */
+   columns [keyN, ...) are courses. Row key = key cells joined with "\x1f". */
 function toMatrix(rows, keyN) {
   return { header: rows[0], rows: rows.slice(1), keyN };
 }
 function matrixRows(m) { return [m.header, ...m.rows]; }
-function rowKey(m, row) { return row.slice(0, m.keyN).join(""); }
+function rowKey(m, row) { return row.slice(0, m.keyN).join("\x1f"); }
 function rowLabel(m, row) { return row.slice(1, m.keyN).join(" "); }
 function cloneMatrix(m) {
   return { header: [...m.header], rows: m.rows.map(r => [...r]), keyN: m.keyN };
@@ -195,7 +195,7 @@ function levelClass(v) { return v === "E" ? "lv-E" : v === "D" ? "lv-D" : v === 
 function fmtDate(s) { return new Date(s).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }); }
 
 /* Render a matrix into a container as an interactive/static table.
-   opts: { editable, edits(Map keycol -> newVal), onCell(key,col,rowIdx,colName),
+   opts: { editable, edits(Map key\x1fcol -> newVal), onCell(key,col,rowIdx,colName),
            highlight(Map same-key -> {old,new}) } */
 function renderMatrix(container, m, opts = {}) {
   container.textContent = "";
@@ -228,7 +228,7 @@ function renderMatrix(container, m, opts = {}) {
       tr.append(el("td", { class: "key-col" + (i === m.keyN - 1 ? " key-sticky" : " key-narrow") }, row[i]));
     for (let i = m.keyN; i < m.header.length; i++) {
       const col = m.header[i], key = rowKey(m, row);
-      const ek = key + "" + col;
+      const ek = key + "\x1f" + col;
       let val = (row[i] || "").trim();
       const td = el("td", { class: "cell " + levelClass(val) }, val);
       if (opts.edits && opts.edits.has(ek)) {
